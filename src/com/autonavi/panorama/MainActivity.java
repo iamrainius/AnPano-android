@@ -1,10 +1,12 @@
 package com.autonavi.panorama;
 
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -13,15 +15,16 @@ import android.graphics.BitmapFactory;
 import android.hardware.Camera;
 import android.hardware.Camera.PictureCallback;
 import android.hardware.Camera.ShutterCallback;
+import android.location.LocationManager;
 import android.opengl.Matrix;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.os.Process;
+import android.provider.ContactsContract.CommonDataKinds.Photo;
 
 import com.autonavi.panorama.AnPano.Callback;
 import com.autonavi.panorama.AnPano.SensorProxy;
@@ -29,15 +32,13 @@ import com.autonavi.panorama.camera.CameraPreview;
 import com.autonavi.panorama.camera.CameraUtility;
 import com.autonavi.panorama.camera.DeviceManager;
 import com.autonavi.panorama.camera.TextureCameraPreview;
+import com.autonavi.panorama.location.LocationProvider;
 import com.autonavi.panorama.sensor.SensorReader;
+import com.autonavi.panorama.storage.PhotoMetadata;
 import com.autonavi.panorama.util.AndroidLogger;
 import com.autonavi.panorama.util.Log;
-import com.badlogic.gdx.Gdx;
-import com.badlogic.gdx.assets.loaders.PixmapLoader;
 import com.badlogic.gdx.backends.android.AndroidApplication;
 import com.badlogic.gdx.backends.android.AndroidApplicationConfiguration;
-import com.badlogic.gdx.graphics.Pixmap;
-import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.math.Vector3;
 
 public class MainActivity extends AndroidApplication implements Callback {
@@ -51,11 +52,12 @@ public class MainActivity extends AndroidApplication implements Callback {
 	SensorReader mSensorReader;
 	private boolean mCameraStopped = true;
 	private boolean mTakingPhoto = false;
-	
 	private Handler mHandler = new MainHandler();
 	private AnPano mRenderer;
-	
 	private HandlerThread mStorageThread;
+	private LocationProvider mLocationProvider;
+	private int mCurTarget;
+	private ArrayList<PhotoMetadata> mPhotoTaken = new ArrayList<PhotoMetadata>();
 	
 	private Camera.PreviewCallback mPreviewCallback = new Camera.PreviewCallback() {
 
@@ -113,6 +115,9 @@ public class MainActivity extends AndroidApplication implements Callback {
 		PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
 		mWakeLock = pm.newWakeLock(PowerManager.FULL_WAKE_LOCK, "Pano");
 		mWakeLock.acquire();
+		
+		mLocationProvider = new LocationProvider(
+				(LocationManager) getSystemService(Context.LOCATION_SERVICE));
 		
 		mSensorReader = new SensorReader();
 		mSensorReader.start(this);
@@ -279,6 +284,7 @@ public class MainActivity extends AndroidApplication implements Callback {
 	@Override
 	protected void onResume() {
 		super.onResume();
+		mLocationProvider.startProvider();
 		initCamera();
 	}
 
@@ -309,13 +315,13 @@ public class MainActivity extends AndroidApplication implements Callback {
 		
 		mCameraPreview.releaseCamera();
 		mCameraPreview = null;
+		mLocationProvider.stopProvider();
 		
 		// Todo:
 		// Ð´Meta data
 		// ¹Ø±ÕÎÄ¼þIO
 	}
 	
-	private int mCurTarget;
 	public synchronized void takePhoto(int targetId) {
 		mCurTarget = targetId;
 		Camera camera = mCameraPreview.getCamera();
@@ -327,6 +333,11 @@ public class MainActivity extends AndroidApplication implements Callback {
 		camera.setPreviewCallback(null);
 		camera.takePicture(mShutterCallback, mRawPictureCallback,
 				mPictureCallback);
+		
+		// Gather metadata
+		mPhotoTaken.add(new PhotoMetadata(null, mLocationProvider
+				.getCurrentLocation(), mSensorReader.getAzimuthInDeg(), System
+				.currentTimeMillis()));
 	}
 	
 	@Override
@@ -386,7 +397,11 @@ public class MainActivity extends AndroidApplication implements Callback {
 				}
 				
 				String imageName = "%d.jpg";
+				String metadataName = "%d.meta";
+				
 				imageName = String.format(imageName, currentImage);
+				metadataName = String.format(metadataName, currentImage);
+				
 				try {
 					File imageFile = new File(path, imageName);
 					out = new FileOutputStream(imageFile);
@@ -404,6 +419,15 @@ public class MainActivity extends AndroidApplication implements Callback {
 
 					out.close();
 					
+					// make metadata path
+					if (currentImage < mPhotoTaken.size()) {
+						PhotoMetadata metadata = mPhotoTaken.get(currentImage);
+						metadata.filePath = imageFile.getAbsolutePath();
+						File metadataFile = new File(path, metadataName);
+						writeMetadataFile(currentImage, metadata, metadataFile);
+					}
+					
+					// Create texture
 					File thumbPath = new File(path, "thumbnail");
 					if (!thumbPath.exists()) {
 						thumbPath.mkdirs();
@@ -436,6 +460,23 @@ public class MainActivity extends AndroidApplication implements Callback {
 	}
 
 
+
+	private void writeMetadataFile(int index, PhotoMetadata metadata, File metadataFile) throws IOException {
+		BufferedWriter writer = new BufferedWriter(new FileWriter(metadataFile));
+		writer.write("ImagePAth=" + metadata.filePath);
+		writer.newLine();
+		writer.write("Longitude=" + metadata.location.getLongitude());
+		writer.newLine();
+		writer.write("Latitude=" + metadata.location.getLatitude());
+		writer.newLine();
+		writer.write("Altitude=" + metadata.location.getAltitude());
+		writer.newLine();
+		writer.write("Heading=" + metadata.heading);
+		writer.newLine();
+		writer.write("Timestamp=" + metadata.timestamp);
+		writer.newLine();
+		writer.close();
+	}
 
 	@Override
 	public void requestPhoto(int targetId) {
