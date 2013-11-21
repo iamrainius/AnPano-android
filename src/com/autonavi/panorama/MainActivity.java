@@ -42,12 +42,9 @@ import com.badlogic.gdx.backends.android.AndroidApplicationConfiguration;
 import com.badlogic.gdx.math.Vector3;
 
 public class MainActivity extends AndroidApplication implements Callback {
-	
-	
-
 	private static final int MSG_START_CAMERA = 0x3;
 	private static final int MSG_TAKE_PHOTO = 0x4;
-	
+
 	CameraPreview mCameraPreview;
 	SensorReader mSensorReader;
 	private boolean mCameraStopped = true;
@@ -57,7 +54,16 @@ public class MainActivity extends AndroidApplication implements Callback {
 	private HandlerThread mStorageThread;
 	private LocationProvider mLocationProvider;
 	private int mCurTarget;
+	private float[] mOldOutput;
+	private int mNumberImage = 0;
+
+	private Handler mStorageHandler;
+	private long mSessionTimestamp;
+	protected File mSessionPath;
 	private ArrayList<PhotoMetadata> mPhotoTaken = new ArrayList<PhotoMetadata>();
+	private FileWriter mOrientationWriter;
+	
+	private WakeLock mWakeLock;
 	
 	private Camera.PreviewCallback mPreviewCallback = new Camera.PreviewCallback() {
 
@@ -100,12 +106,6 @@ public class MainActivity extends AndroidApplication implements Callback {
 		}
 	};
 	
-	private float[] mOldOutput;
-	
-	private Handler mStorageHandler;
-	private long mSessionTimestamp;
-	private WakeLock mWakeLock;
-
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
@@ -116,17 +116,29 @@ public class MainActivity extends AndroidApplication implements Callback {
 		mWakeLock = pm.newWakeLock(PowerManager.FULL_WAKE_LOCK, "Pano");
 		mWakeLock.acquire();
 		
+		mSessionTimestamp = System.currentTimeMillis();
+		
+		mSessionPath = new File(getExternalFilesDir("data"),
+				String.valueOf(mSessionTimestamp));
+		if (!mSessionPath.exists()) {
+			mSessionPath.mkdirs();
+		}
+		
+		try {
+			mOrientationWriter = new FileWriter(new File(mSessionPath, "orientation.txt"));
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		
 		mLocationProvider = new LocationProvider(
 				(LocationManager) getSystemService(Context.LOCATION_SERVICE));
 		
 		mSensorReader = new SensorReader();
 		mSensorReader.start(this);
-		
+
 		mStorageThread = new HandlerThread("mStorageThread");
 		mStorageThread.start();
 		mStorageHandler = new Handler(mStorageThread.getLooper());
-		
-		mSessionTimestamp = System.currentTimeMillis();
 		
 		AndroidApplicationConfiguration cfg = new AndroidApplicationConfiguration();
 		cfg.useGL20 = true;
@@ -157,11 +169,7 @@ public class MainActivity extends AndroidApplication implements Callback {
 				//mSensorReader.setHeadingDegrees(0.0);
 //				adjustHeading();
 				mOldOutput = mSensorReader.getFilterOutput();
-				
-				float[] rotation = new float[16];
-								
-				Matrix.transposeM(rotation, 0, mOldOutput, 0);
-				return rotation;
+				return mOldOutput;
 			}
 
 			@Override
@@ -320,6 +328,10 @@ public class MainActivity extends AndroidApplication implements Callback {
 		// Todo:
 		// Ð´Meta data
 		// ¹Ø±ÕÎÄ¼þIO
+		try {
+			mOrientationWriter.close();
+		} catch (IOException e) {
+		}
 	}
 	
 	public synchronized void takePhoto(int targetId) {
@@ -376,7 +388,6 @@ public class MainActivity extends AndroidApplication implements Callback {
 		
 	}
 	
-	private int mNumberImage = 0;
 	private synchronized void writePictureToFile(byte[] imageData) {
 		final int targetId = mCurTarget;
 		mTakingPhoto = false;
@@ -390,10 +401,9 @@ public class MainActivity extends AndroidApplication implements Callback {
 			@Override
 			public void run() {
 				FileOutputStream out = null;
-				File path = new File(getExternalFilesDir("data"),
-						String.valueOf(mSessionTimestamp));
-				if (!path.exists()) {
-					path.mkdirs();
+				
+				if (!mSessionPath.exists()) {
+					mSessionPath.mkdirs();
 				}
 				
 				String imageName = "%d.jpg";
@@ -403,7 +413,7 @@ public class MainActivity extends AndroidApplication implements Callback {
 				metadataName = String.format(metadataName, currentImage);
 				
 				try {
-					File imageFile = new File(path, imageName);
+					File imageFile = new File(mSessionPath, imageName);
 					out = new FileOutputStream(imageFile);
 					Log.log("Save a photo at: " + imageFile.getAbsolutePath());
 					
@@ -423,12 +433,12 @@ public class MainActivity extends AndroidApplication implements Callback {
 					if (currentImage < mPhotoTaken.size()) {
 						PhotoMetadata metadata = mPhotoTaken.get(currentImage);
 						metadata.filePath = imageFile.getAbsolutePath();
-						File metadataFile = new File(path, metadataName);
+						File metadataFile = new File(mSessionPath, metadataName);
 						writeMetadataFile(currentImage, metadata, metadataFile);
 					}
 					
 					// Create texture
-					File thumbPath = new File(path, "thumbnail");
+					File thumbPath = new File(mSessionPath, "thumbnail");
 					if (!thumbPath.exists()) {
 						thumbPath.mkdirs();
 					}
@@ -479,7 +489,7 @@ public class MainActivity extends AndroidApplication implements Callback {
 	}
 
 	@Override
-	public void requestPhoto(int targetId) {
+	public void requestPhoto(int targetId, float[] rotation) {
 		if (mTakingPhoto) {
 			return;
 		}
@@ -489,6 +499,29 @@ public class MainActivity extends AndroidApplication implements Callback {
 		msg.arg1 = targetId;
 		mHandler.sendMessage(msg);
 		mTakingPhoto = true;
+		writeOrientation(rotation);
+	}
+
+	private void writeOrientation(float[] rotation) {
+		if (mOrientationWriter == null) {
+			return;
+		}
+		
+		StringBuilder sb = new StringBuilder();
+		float sum = 0.0f;
+		
+		for (int i = 0; i < 16; i++) {
+			sb.append(rotation[i]).append(" ");
+			sum += rotation[i];
+		}
+		
+		String line = sb.toString() + sum + "\n";
+		
+		try {
+			mOrientationWriter.write(line);
+			mOrientationWriter.flush();
+		} catch (IOException e) {
+		}
 	}
 	
 }

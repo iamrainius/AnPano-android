@@ -1,5 +1,7 @@
 package com.autonavi.panorama;
 
+import android.opengl.Matrix;
+
 import com.autonavi.panorama.opengl.PhotoCollection;
 import com.autonavi.panorama.opengl.TargetCollection;
 import com.autonavi.panorama.opengl.TexturedCube;
@@ -27,7 +29,7 @@ public class AnPano implements ApplicationListener {
 
 	public interface Callback {
 		float getFieldOfViewFromDevice();
-		void requestPhoto(int targetId);
+		void requestPhoto(int targetId, float[] rotation);
 	}
 
 	public interface SensorProxy {
@@ -71,7 +73,8 @@ public class AnPano implements ApplicationListener {
 	private Vector3 mInitialUp;
 	private byte[] mImageData;
 	private boolean mTakeNewPhoto = false;
-
+	private boolean mFirstPhoto = true;
+	
 	public AnPano() {
 		this(null);
 	}
@@ -143,12 +146,6 @@ public class AnPano implements ApplicationListener {
 
 		processFrame();
 		
-		if (mTakeNewPhoto) {
-			Log.log("Take a photo at: " + mTargetCollection.getTargetHit());
-			int targetId = addNewFrame();
-			mCallback.requestPhoto(targetId);
-		}
-
 		Gdx.gl.glViewport(0, 0, Gdx.graphics.getWidth(),
 				Gdx.graphics.getHeight());
 		Gdx.gl.glClear(GL10.GL_COLOR_BUFFER_BIT | GL10.GL_DEPTH_BUFFER_BIT);
@@ -163,19 +160,37 @@ public class AnPano implements ApplicationListener {
 	private void processFrame() {
 		mCameraController.update();
 
-		Matrix4 m = new Matrix4(mSensor.getFilterOutput());
+		float[] output = mSensor.getFilterOutput();
+		float[] rotation = new float[16];
+		Matrix.transposeM(rotation, 0, output, 0);
+		
+		Matrix4 m = new Matrix4(rotation);
 		mPerspectiveCamera.lookAt(0.0f, 0.0f, -1.0f);
 		mPerspectiveCamera.up.set(mInitialUp);
-		//mPerspectiveCamera.rotate(Gdx.input.getAzimuth(), 0.0f, 1.0f, 0.0f);
-		//mPerspectiveCamera.rotate(-(float) mSensor.getHeadingDegrees(), 0.0f, 1.0f, 0.0f);
 		mPerspectiveCamera.rotate(m);
-		//mPerspectiveCamera.rotate(mSensor.getDeltaHeading(), 0.0f, 1.0f, 0.0f);
+//		// 拍摄第一张照片之前只锁定镜头水平摇动
+//		if (mFirstPhoto) {
+////			Vector3 direction = mPerspectiveCamera.direction.cpy();
+////			direction.x = 0;
+////			mPerspectiveCamera.lookAt(direction.x, direction.y, direction.z);
+//			float azimuth = Gdx.input.getAzimuth();
+//			mPerspectiveCamera.rotate(-azimuth, 0.0f, 1.0f, 0.0f);
+//		}
+		mPerspectiveCamera.rotate(mInitHeading, 0.0f, 1.0f, 0.0f);
+		
 		mPerspectiveCamera.update(false);
 		
 		if (mTargetCollection.hitTartget()) {
 			mTakeNewPhoto  = true;
 		} else {
 			mTakeNewPhoto = false;
+		}
+		
+		if (mTakeNewPhoto) {
+			Log.log("Take a photo at: " + mTargetCollection.getTargetHit());
+			int targetId = addNewFrame();
+			mCallback.requestPhoto(targetId, output);
+			mFirstPhoto = false;
 		}
 	}
 
